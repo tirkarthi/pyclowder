@@ -378,7 +378,8 @@ class Connector(object):
         source_host = body.get('host', '')
         host = self.clowder_url if self.clowder_url else source_host
         if host == '' or source_host == '':
-            logging.error("Host is empty, this is bad.")
+            message = "No host or empty host found in message; unable to process."
+            self.prep_fail_handler(message)
             return
         if not source_host.endswith('/'): source_host += '/'
         if not host.endswith('/'): host += '/'
@@ -386,7 +387,8 @@ class Connector(object):
         retry_count = 0 if 'retry_count' not in body else body['retry_count']
         resource = self._build_resource(body, host, secret_key)
         if not resource:
-            logging.error("No resource found, this is bad.")
+            message = "Resource was unable to be built; unable to process."
+            self.prep_fail_handler(message)
             return
 
         # register extractor
@@ -495,6 +497,10 @@ class Connector(object):
                 self.message_resubmit(resource, retry_count+1, message)
             else:
                 self.message_error(resource, message)
+
+    def prep_fail_handler(self, message):
+        """Handle errors in pre-processing of message e.g. resource not found or host is missing."""
+        logging.error(message)
 
     def register_extractor(self, endpoints):
         """Register extractor info with Clowder.
@@ -885,6 +891,14 @@ class RabbitMQHandler(Connector):
     def is_finished(self):
         with self.lock:
             return self.thread and not self.thread.isAlive() and self.finished and len(self.messages) == 0
+
+    def prep_fail_handler(self, message):
+        properties = pika.BasicProperties(delivery_mode=2, reply_to=self.header.reply_to)
+        self.channel.basic_publish(exchange='',
+                              routing_key='error.' + self.rabbitmq_queue,
+                              properties=properties,
+                              body=self.body)
+        self.channel.basic_ack(self.method.delivery_tag)
 
     def process_messages(self, channel, rabbitmq_queue):
         while self.messages:
